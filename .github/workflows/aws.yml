@@ -1,0 +1,710 @@
+Rule App — Full Monorepo (Complete Full-code Scaffold)
+
+> IMPORTANT: This scaffold is a legal demo / MVP that uses virtual in-app credits only. It does NOT implement real-money gambling, real-money betting, or live payment settlement. Integrating real-money flows, gambling, or cross-border payments requires licences, KYC/AML compliance, and legal counsel. Use this code only for prototyping, learning, or building a compliant product.
+
+
+
+This repo is an expanded, copy-ready full-stack scaffold for a full application you can paste into a repository. It includes:
+
+Next.js frontend pages (web dashboard)
+
+API routes (Next.js API) with MongoDB (Mongoose) models
+
+JWT auth, password hashing, protected endpoints
+
+Virtual wallet + transaction ledger + audit logs
+
+Task/gig system, social feed, marketplace, games (play-money)
+
+Simple real-time chat using Socket.IO (server + client)
+
+Admin dashboard pages and admin API
+
+Basic KYC placeholder flow (for compliance) — stub only
+
+Dockerfile + docker-compose for local development
+
+CI step (GitHub Actions example)
+
+
+Copy each file into your repo preserving the paths.
+
+
+---
+
+1) README.md
+
+# PlaceWin World — Full Web MVP (Complete Scaffold)
+
+## Overview
+This repository is a full, opinionated starter for a multi-module platform using virtual credits only. It's intended for prototyping and early validation.
+
+**Modules included:**
+- Auth (register/login)
+- User profiles
+- Virtual wallet & ledger + transaction history
+- Tasks (micro-gigs)
+- Social feed
+- Marketplace
+- Games (coin flip - virtual)
+- Real-time chat (Socket.IO)
+- Admin dashboard
+- KYC placeholder
+
+**Not included:** Real-money betting, payment processors for gambling, or any code intended to bypass legal/regulatory requirements.
+
+## Quick start (local)
+1. Install Node 18+, Yarn or npm
+2. `git clone <repo>`
+3. Create `.env` with:
+
+MONGODB_URI=mongodb://localhost:27017/placewin JWT_SECRET=replace_with_strong_secret NEXT_PUBLIC_BASE_URL=http://localhost:3000 SOCKET_IO_SECRET=replace_socket_secret
+
+4. `docker-compose up --build` (or run `npm install` then `npm run dev`)
+5. Open `http://localhost:3000`
+
+## Production notes
+- Replace MongoDB with managed Atlas cluster
+- Use HTTPS and secure headers
+- Add input validation, sanitization, rate limits, WAF
+- Consult legal counsel before adding real-money financial features
+
+## Want a ZIP?
+I can package this repo into a downloadable ZIP if you want — tell me.
+
+---
+
+## 2) `package.json`
+```json
+{
+  "name": "placewin-world-full",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "docker:dev": "docker-compose up --build"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie": "^0.5.0",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^7.0.0",
+    "next": "13.5.2",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "swr": "^2.0.0",
+    "socket.io": "^4.7.1",
+    "socket.io-client": "^4.7.1"
+  }
+}
+
+
+---
+
+3) Dockerfile
+
+FROM node:18-alpine
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY . .
+EXPOSE 3000
+CMD ["npm","run","dev"]
+
+
+---
+
+4) docker-compose.yml
+
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - '3000:3000'
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/placewin
+      - JWT_SECRET=${JWT_SECRET}
+      - NEXT_PUBLIC_BASE_URL=http://localhost:3000
+      - SOCKET_IO_SECRET=${SOCKET_IO_SECRET}
+    depends_on:
+      - mongo
+  mongo:
+    image: mongo:6.0
+    restart: always
+    volumes:
+      - mongo_data:/data/db
+volumes:
+  mongo_data:
+
+
+---
+
+5) lib/db.js
+
+import mongoose from 'mongoose'
+
+const MONGODB_URI = process.env.MONGODB_URI
+if (!MONGODB_URI) throw new Error('MONGODB_URI not set')
+
+let cached = global.mongoose
+if (!cached) cached = global.mongoose = { conn: null, promise: null }
+
+export async function connectDB(){
+  if (cached.conn) return cached.conn
+  if (!cached.promise) cached.promise = mongoose.connect(MONGODB_URI, { dbName: 'placewin' }).then(m => m)
+  cached.conn = await cached.promise
+  return cached.conn
+}
+
+
+---
+
+6) models/User.js
+
+import mongoose from 'mongoose'
+
+const UserSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  passwordHash: { type: String, required: true },
+  displayName: String,
+  country: String,
+  currency: { type: String, default: 'CRED' },
+  createdAt: { type: Date, default: Date.now },
+  role: { type: String, default: 'user' },
+  credits: { type: Number, default: 100 },
+  kycStatus: { type: String, default: 'none' },
+  lastActive: Date
+})
+
+export default mongoose.models.User || mongoose.model('User', UserSchema)
+
+
+---
+
+7) models/Transaction.js (ledger & audit)
+
+import mongoose from 'mongoose'
+
+const TransactionSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: { type: String, enum: ['credit','debit','fee','adjustment','transfer'] },
+  amount: Number,
+  balanceAfter: Number,
+  meta: Object,
+  createdAt: { type: Date, default: Date.now }
+})
+
+export default mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema)
+
+
+---
+
+8) models/Task.js
+
+import mongoose from 'mongoose'
+
+const TaskSchema = new mongoose.Schema({
+  title: String,
+  description: String,
+  reward: Number,
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  status: { type: String, enum: ['open','assigned','completed','closed'], default: 'open' },
+  proof: String,
+  createdAt: { type: Date, default: Date.now }
+})
+
+export default mongoose.models.Task || mongoose.model('Task', TaskSchema)
+
+
+---
+
+9) models/Post.js
+
+import mongoose from 'mongoose'
+
+const PostSchema = new mongoose.Schema({
+  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  text: String,
+  media: [String],
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  createdAt: { type: Date, default: Date.now }
+})
+
+export default mongoose.models.Post || mongoose.model('Post', PostSchema)
+
+
+---
+
+10) models/Listing.js
+
+import mongoose from 'mongoose'
+
+const ListingSchema = new mongoose.Schema({
+  title: String,
+  description: String,
+  price: Number,
+  seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now }
+})
+
+export default mongoose.models.Listing || mongoose.model('Listing', ListingSchema)
+
+
+---
+
+11) models/ChatMessage.js (for persistence)
+
+import mongoose from 'mongoose'
+
+const ChatSchema = new mongoose.Schema({
+  room: String,
+  from: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  text: String,
+  createdAt: { type: Date, default: Date.now }
+})
+
+export default mongoose.models.ChatMessage || mongoose.model('ChatMessage', ChatSchema)
+
+
+---
+
+12) pages/_app.js
+
+import '../styles/globals.css'
+import { AuthProvider } from '../utils/auth'
+
+export default function App({ Component, pageProps }){
+  return (
+    <AuthProvider>
+      <Component {...pageProps} />
+    </AuthProvider>
+  )
+}
+
+
+---
+
+13) utils/auth.js (client React context + fetcher)
+
+import React, { createContext, useContext, useEffect, useState } from 'react'
+import useSWR from 'swr'
+
+const AuthContext = createContext()
+
+export function AuthProvider({ children }){
+  const [token, setToken] = useState(null)
+  useEffect(()=>{ const t = localStorage.getItem('pw_token'); if(t) setToken(t) }, [])
+  const login = (t) => { localStorage.setItem('pw_token', t); setToken(t) }
+  const logout = () => { localStorage.removeItem('pw_token'); setToken(null) }
+  return <AuthContext.Provider value={{ token, login, logout }}>{children}</AuthContext.Provider>
+}
+export function useAuth(){ return useContext(AuthContext) }
+export const fetcher = (url, token) => fetch(url, { headers: token ? { 'Authorization':'Bearer '+token } : {} }).then(r=>r.json())
+
+
+---
+
+14) pages/index.js (dashboard)
+
+import Link from 'next/link'
+import { useAuth, fetcher } from '../utils/auth'
+import useSWR from 'swr'
+
+export default function Home(){
+  const { token } = useAuth()
+  const { data } = useSWR(token?['/api/me', token]:null,(u,t)=>fetcher(u,t))
+  return (
+    <div style={{padding:20}}>
+      <h1>PlaceWin World — Demo</h1>
+      {data?.user ? (
+        <>
+          <p>Welcome, {data.user.displayName || data.user.username} — Credits: {data.user.credits}</p>
+          <nav>
+            <Link href="/tasks">Tasks</Link> | <Link href="/feed">Feed</Link> | <Link href="/market">Market</Link> | <Link href="/games">Games</Link> | <Link href="/chat">Chat</Link> | <Link href="/admin">Admin</Link>
+          </nav>
+        </>
+      ) : (
+        <p><Link href="/auth/login">Login</Link> or <Link href="/auth/register">Register</Link></p>
+      )}
+    </div>
+  )
+}
+
+
+---
+
+15) Auth pages: pages/auth/register.js and pages/auth/login.js
+
+// register.js
+import { useState } from 'react'
+import Router from 'next/router'
+export default function Register(){
+  const [form,setForm] = useState({ username:'', email:'', password:'' })
+  async function submit(e){ e.preventDefault(); const res = await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form)}); const j = await res.json(); if(j.token){ localStorage.setItem('pw_token', j.token); Router.push('/') } else alert(j.error||'Error') }
+  return (<form onSubmit={submit} style={{padding:20}}><h2>Register</h2><input placeholder='username' value={form.username} onChange={e=>setForm({...form,username:e.target.value})} /><input placeholder='email' value={form.email} onChange={e=>setForm({...form,email:e.target.value})} /><input placeholder='password' type='password' value={form.password} onChange={e=>setForm({...form,password:e.target.value})} /><button>Register</button></form>) }
+
+// login.js
+import { useState } from 'react'
+import Router from 'next/router'
+export default function Login(){
+  const [form,setForm]=useState({ username:'', password:'' })
+  async function submit(e){ e.preventDefault(); const res = await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(form)}); const j = await res.json(); if(j.token){ localStorage.setItem('pw_token', j.token); Router.push('/') } else alert(j.error||'Invalid') }
+  return (<form onSubmit={submit} style={{padding:20}}><h2>Login</h2><input placeholder='username' value={form.username} onChange={e=>setForm({...form,username:e.target.value})} /><input placeholder='password' type='password' value={form.password} onChange={e=>setForm({...form,password:e.target.value})} /><button>Login</button></form>) }
+
+
+---
+
+16) API: pages/api/auth/register.js and pages/api/auth/login.js
+
+// register
+import { connectDB } from '../../../lib/db'
+import User from '../../../models/User'
+import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  if(req.method!=='POST') return res.status(405).end()
+  await connectDB()
+  const { username, email, password } = req.body
+  if(!username || !email || !password) return res.status(400).json({ error:'missing' })
+  const existing = await User.findOne({ $or:[{username},{email}] })
+  if(existing) return res.status(400).json({ error:'user exists' })
+  const hash = await bcrypt.hash(password, 10)
+  const user = await User.create({ username, email, passwordHash: hash, displayName: username })
+  const token = jwt.sign({ sub: user._id }, process.env.JWT_SECRET || 'dev', { expiresIn:'30d' })
+  res.json({ token })
+}
+
+// login
+import { connectDB } from '../../../lib/db'
+import User from '../../../models/User'
+import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  if(req.method!=='POST') return res.status(405).end()
+  await connectDB()
+  const { username, password } = req.body
+  const user = await User.findOne({ username })
+  if(!user) return res.status(400).json({ error:'no user' })
+  const ok = await bcrypt.compare(password, user.passwordHash)
+  if(!ok) return res.status(400).json({ error:'invalid' })
+  const token = jwt.sign({ sub: user._id }, process.env.JWT_SECRET || 'dev', { expiresIn:'30d' })
+  res.json({ token })
+}
+
+
+---
+
+17) API: pages/api/me.js (protected current user)
+
+import { connectDB } from '../../lib/db'
+import User from '../../models/User'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  const auth = req.headers.authorization
+  if(!auth) return res.status(401).json({ error:'auth' })
+  const token = auth.split(' ')[1]
+  try{
+    const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+    const user = await User.findById(data.sub).lean()
+    if(!user) return res.status(404).json({ error:'no' })
+    delete user.passwordHash
+    res.json({ user })
+  }catch(e){ res.status(401).json({ error:'token' }) }
+}
+
+
+---
+
+18) API: Tasks pages/api/tasks/*.js (list/create/accept/complete)
+
+// index.js
+import { connectDB } from '../../../lib/db'
+import Task from '../../../models/Task'
+import User from '../../../models/User'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method==='GET'){
+    const tasks = await Task.find().populate('createdBy assignedTo').lean()
+    return res.json({ tasks })
+  }
+  if(req.method==='POST'){
+    const auth = req.headers.authorization
+    if(!auth) return res.status(401).json({ error:'auth' })
+    const token = auth.split(' ')[1]
+    const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+    const user = await User.findById(data.sub)
+    const { title, description, reward } = req.body
+    const t = await Task.create({ title, description, reward, createdBy: user._id })
+    return res.json({ task: t })
+  }
+  res.status(405).end()
+}
+
+// [id]/accept.js
+import { connectDB } from '../../../../lib/db'
+import Task from '../../../../models/Task'
+import User from '../../../../models/User'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method!=='POST') return res.status(405).end()
+  const auth = req.headers.authorization
+  if(!auth) return res.status(401).json({ error:'auth' })
+  const token = auth.split(' ')[1]
+  const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+  const user = await User.findById(data.sub)
+  const { id } = req.query
+  const task = await Task.findById(id)
+  if(!task) return res.status(404).json({ error:'no' })
+  if(task.status !== 'open') return res.status(400).json({ error:'not open' })
+  task.assignedTo = user._id
+  task.status = 'assigned'
+  await task.save()
+  res.json({ ok:true })
+}
+
+// [id]/complete.js
+import { connectDB } from '../../../../lib/db'
+import Task from '../../../../models/Task'
+import User from '../../../../models/User'
+import Transaction from '../../../../models/Transaction'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method!=='POST') return res.status(405).end()
+  const auth = req.headers.authorization
+  if(!auth) return res.status(401).json({ error:'auth' })
+  const token = auth.split(' ')[1]
+  const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+  const user = await User.findById(data.sub)
+  const { id } = req.query
+  const task = await Task.findById(id).populate('createdBy')
+  if(!task) return res.status(404).json({ error:'no' })
+  if(!task.assignedTo || String(task.assignedTo) !== String(user._id)) return res.status(403).json({ error:'not yours' })
+  const creator = await User.findById(task.createdBy._id)
+  if(creator.credits < task.reward) return res.status(400).json({ error:'creator funds low' })
+  creator.credits -= task.reward
+  user.credits += task.reward
+  await creator.save(); await user.save()
+  // ledger entries
+  await Transaction.create({ user: creator._id, type: 'debit', amount: task.reward, balanceAfter: creator.credits, meta: { task: task._id } })
+  await Transaction.create({ user: user._id, type: 'credit', amount: task.reward, balanceAfter: user.credits, meta: { task: task._id } })
+  task.status = 'completed'
+  await task.save()
+  res.json({ ok:true })
+}
+
+
+---
+
+19) API: Feed pages/api/feed/index.js
+
+import { connectDB } from '../../../lib/db'
+import Post from '../../../models/Post'
+import User from '../../../models/User'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method==='GET'){
+    const posts = await Post.find().populate('author').sort({ createdAt:-1 }).lean()
+    return res.json({ posts })
+  }
+  if(req.method==='POST'){
+    const auth = req.headers.authorization
+    if(!auth) return res.status(401).json({ error:'auth' })
+    const token = auth.split(' ')[1]
+    const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+    const user = await User.findById(data.sub)
+    const { text } = req.body
+    const p = await Post.create({ author: user._id, text })
+    return res.json({ post: p })
+  }
+  res.status(405).end()
+}
+
+
+---
+
+20) API: Market pages/api/market/*.js
+
+// index.js
+import { connectDB } from '../../../lib/db'
+import Listing from '../../../models/Listing'
+import User from '../../../models/User'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method==='GET'){
+    const items = await Listing.find().populate('seller').lean()
+    return res.json({ items })
+  }
+  if(req.method==='POST'){
+    const auth = req.headers.authorization
+    if(!auth) return res.status(401).json({ error:'auth' })
+    const token = auth.split(' ')[1]
+    const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+    const user = await User.findById(data.sub)
+    const { title, description, price } = req.body
+    const l = await Listing.create({ title, description, price, seller: user._id })
+    return res.json({ listing: l })
+  }
+  res.status(405).end()
+}
+
+// [id]/buy.js
+import { connectDB } from '../../../../lib/db'
+import Listing from '../../../../models/Listing'
+import User from '../../../../models/User'
+import Transaction from '../../../../models/Transaction'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method!=='POST') return res.status(405).end()
+  const auth = req.headers.authorization
+  if(!auth) return res.status(401).json({ error:'auth' })
+  const token = auth.split(' ')[1]
+  const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+  const buyer = await User.findById(data.sub)
+  const { id } = req.query
+  const listing = await Listing.findById(id).populate('seller')
+  if(!listing) return res.status(404).json({ error:'no' })
+  if(buyer.credits < listing.price) return res.status(400).json({ error:'insufficient' })
+  buyer.credits -= listing.price
+  listing.seller.credits += listing.price
+  await buyer.save(); await listing.seller.save()
+  await Transaction.create({ user: buyer._id, type: 'debit', amount: listing.price, balanceAfter: buyer.credits, meta: { listing: listing._id } })
+  await Transaction.create({ user: listing.seller._id, type: 'credit', amount: listing.price, balanceAfter: listing.seller.credits, meta: { listing: listing._id } })
+  res.json({ ok:true })
+}
+
+
+---
+
+21) API: Games pages/api/games/coinflip.js
+
+import { connectDB } from '../../../lib/db'
+import User from '../../../models/User'
+import Transaction from '../../../models/Transaction'
+import jwt from 'jsonwebtoken'
+
+export default async function handler(req,res){
+  await connectDB()
+  if(req.method!=='POST') return res.status(405).end()
+  const auth = req.headers.authorization
+  if(!auth) return res.status(401).json({ error:'auth' })
+  const token = auth.split(' ')[1]
+  const data = jwt.verify(token, process.env.JWT_SECRET || 'dev')
+  const user = await User.findById(data.sub)
+  const { amount, choice } = req.body
+  if(amount <= 0 || user.credits < amount) return res.status(400).json# This workflow will build and push a new container image to Amazon ECR,
+# and then will deploy a new task definition to Amazon ECS, when there is a push to the "main" branch.
+#
+# To use this workflow, you will need to complete the following set-up steps:
+#
+# 1. Create an ECR repository to store your images.
+#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
+#    Replace the value of the `ECR_REPOSITORY` environment variable in the workflow below with your repository's name.
+#    Replace the value of the `AWS_REGION` environment variable in the workflow below with your repository's region.
+#
+# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
+#    For example, follow the Getting Started guide on the ECS console:
+#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
+#    Replace the value of the `ECS_SERVICE` environment variable in the workflow below with the name you set for the Amazon ECS service.
+#    Replace the value of the `ECS_CLUSTER` environment variable in the workflow below with the name you set for the cluster.
+#
+# 3. Store your ECS task definition as a JSON file in your repository.
+#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
+#    Replace the value of the `ECS_TASK_DEFINITION` environment variable in the workflow below with the path to the JSON file.
+#    Replace the value of the `CONTAINER_NAME` environment variable in the workflow below with the name of the container
+#    in the `containerDefinitions` section of the task definition.
+#
+# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
+#    and best practices on handling the access key credentials.
+
+name: Deploy to Amazon ECS
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: MY_AWS_REGION                   # set this to your preferred AWS region, e.g. us-west-1
+  ECR_REPOSITORY: MY_ECR_REPOSITORY           # set this to your Amazon ECR repository name
+  ECS_SERVICE: MY_ECS_SERVICE                 # set this to your Amazon ECS service name
+  ECS_CLUSTER: MY_ECS_CLUSTER                 # set this to your Amazon ECS cluster name
+  ECS_TASK_DEFINITION: MY_ECS_TASK_DEFINITION # set this to the path to your Amazon ECS task definition
+                                               # file, e.g. .aws/task-definition.json
+  CONTAINER_NAME: MY_CONTAINER_NAME           # set this to the name of the container in the
+                                               # containerDefinitions section of your task definition
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ env.ECS_TASK_DEFINITION }}
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
